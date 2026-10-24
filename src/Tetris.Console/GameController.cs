@@ -144,9 +144,8 @@ public sealed class GameController
     {
         if (Screen != GameScreen.Playing) return;
         Record(ReplayEventKind.Tick);
-        if (!ControlsPlayerOneWithAi) AdvanceEngine(Engine);
-        if (Mode == GameMode.TwoPlayer && !ControlsPlayerTwoWithAi && SecondEngine is not null)
-            AdvanceEngine(SecondEngine);
+        AdvanceEngine(Engine);
+        if (Mode == GameMode.TwoPlayer && SecondEngine is not null) AdvanceEngine(SecondEngine);
         UpdateScreenFromGameState();
         SaveHighScoreIfNeeded();
     }
@@ -210,15 +209,13 @@ public sealed class GameController
 
         try
         {
-            var move = _aiPlanner.FindBestMove(target.State.Board, target.State.CurrentPiece);
-            var changed = target.ApplyAiMove(move);
-            if (changed)
-            {
-                Record(ReplayEventKind.AiTurn);
-                ResolveAttack(target);
-                UpdateScreenFromGameState();
-                SaveHighScoreIfNeeded();
-            }
+            var current = target.State.CurrentPiece;
+            var move = _aiPlanner.FindBestMove(target.State.Board, current);
+            var changed = current.X != move.X && target.MoveHorizontal(Math.Sign(move.X - current.X));
+            if (!changed && current.Rotation != move.Rotation) changed = target.RotateClockwise();
+            if (!changed) return false;
+
+            Record(ReplayEventKind.AiTurn);
             return changed;
         }
         catch (InvalidOperationException)
@@ -227,7 +224,6 @@ public sealed class GameController
         }
     }
 
-    private bool ControlsPlayerOneWithAi => AiEnabled && Mode != GameMode.TwoPlayer;
     private bool ControlsPlayerTwoWithAi => AiEnabled && Mode == GameMode.TwoPlayer;
 
     private void StartMode(GameMode mode, int? seed = null, bool startRecording = true)

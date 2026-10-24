@@ -49,7 +49,6 @@ try
                 {
                     controller.PerformAiTurn();
                     aiAccumulator = TimeSpan.Zero;
-                    dropAccumulator = TimeSpan.Zero;
                 }
             }
 

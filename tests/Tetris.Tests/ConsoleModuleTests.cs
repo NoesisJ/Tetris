@@ -69,7 +69,88 @@ public sealed class ConsoleModuleTests
 
         Assert.True(controller.PerformAiTurn());
         Assert.Equal(GameStatus.Running, engine.State.Status);
-        Assert.Contains(Enumerable.Range(0, engine.State.Board.Width), x => engine.State.Board.GetCell(x, 15).HasValue);
+        Assert.Equal(0, Enumerable.Range(0, engine.State.Board.Width).Count(x => engine.State.Board.GetCell(x, 15).HasValue));
+        Assert.InRange(engine.State.CurrentPiece.Y, 0, 1);
+    }
+
+    [Fact]
+    public void TwoPlayer_EnginesAndBoardsAreIndependentAcrossInputsAndGarbage()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"tetris-isolation-{Guid.NewGuid():N}");
+        try
+        {
+            var controller = new GameController(new HighScoreStore(Path.Combine(directory, "score.xml")),
+                seed => new GameEngine(new RandomPieceSource(seed)), new ReplayStore(Path.Combine(directory, "replays")));
+            controller.Handle(GameCommand.StartTwoPlayer);
+            var first = controller.Engine;
+            var second = controller.SecondEngine!;
+            Assert.NotSame(first, second);
+            Assert.NotSame(first.State, second.State);
+            Assert.NotSame(first.State.Board, second.State.Board);
+
+            first.State.Board.SetCell(0, 15, TetrominoType.I);
+            Assert.Null(second.State.Board.GetCell(0, 15));
+            second.State.Board.SetCell(11, 15, TetrominoType.Z);
+            Assert.Null(first.State.Board.GetCell(11, 15));
+
+            var firstX = first.State.CurrentPiece.X;
+            var secondX = second.State.CurrentPiece.X;
+            controller.Handle(GameCommand.PlayerOneLeft);
+            Assert.Equal(firstX - 1, first.State.CurrentPiece.X);
+            Assert.Equal(secondX, second.State.CurrentPiece.X);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public void AiTurn_OnlySteersPieceAndLeavesGravityToNormalGameTick()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"tetris-ai-steer-{Guid.NewGuid():N}", "score.xml");
+        var engine = new GameEngine(new TestPieceSource());
+        var controller = new GameController(engine, new HighScoreStore(path));
+        controller.Handle(GameCommand.StartAiDemo);
+        var startingY = engine.State.CurrentPiece.Y;
+        var boardBefore = engine.State.Board.Clone();
+
+        Assert.True(controller.PerformAiTurn());
+
+        Assert.Equal(startingY, engine.State.CurrentPiece.Y);
+        Assert.Equal(0, Enumerable.Range(0, 16).Sum(y => Enumerable.Range(0, 12).Count(x => boardBefore.GetCell(x, y).HasValue)));
+        Assert.Equal(0, Enumerable.Range(0, 16).Sum(y => Enumerable.Range(0, 12).Count(x => engine.State.Board.GetCell(x, y).HasValue)));
+        controller.AdvanceTime();
+        Assert.Equal(startingY + 1, engine.State.CurrentPiece.Y);
+    }
+
+    [Fact]
+    public void TwoPlayerAi_ControlsOnlyPlayerTwoAndBothBoardsReceiveGravity()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"tetris-two-ai-{Guid.NewGuid():N}");
+        try
+        {
+            var controller = new GameController(new HighScoreStore(Path.Combine(directory, "score.xml")),
+                seed => new GameEngine(new RandomPieceSource(seed)), new ReplayStore(Path.Combine(directory, "replays")));
+            controller.Handle(GameCommand.StartTwoPlayer);
+            var first = controller.Engine;
+            var second = controller.SecondEngine!;
+            var firstY = first.State.CurrentPiece.Y;
+            var secondY = second.State.CurrentPiece.Y;
+            var firstX = first.State.CurrentPiece.X;
+            controller.Handle(GameCommand.ToggleAi);
+
+            Assert.True(controller.PerformAiTurn());
+            Assert.Equal(firstY, first.State.CurrentPiece.Y);
+            Assert.Equal(secondY, second.State.CurrentPiece.Y);
+            var secondX = second.State.CurrentPiece.X;
+            controller.Handle(GameCommand.PlayerOneRight);
+            Assert.Equal(firstX + 1, first.State.CurrentPiece.X);
+            controller.Handle(GameCommand.PlayerTwoRight);
+            Assert.Equal(secondX, second.State.CurrentPiece.X);
+
+            controller.AdvanceTime();
+            Assert.Equal(firstY + 1, first.State.CurrentPiece.Y);
+            Assert.Equal(secondY + 1, second.State.CurrentPiece.Y);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
     [Fact]
