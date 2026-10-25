@@ -12,6 +12,8 @@ public sealed class GameController
     private Random _garbageRandom = new();
     private readonly Func<int, GameEngine> _engineFactory;
     private readonly ReplayStore? _replayStore;
+    private readonly IScoreHistoryStore? _scoreHistoryStore;
+    private bool _scoreResultsSaved;
     private GameEngine? _providedInitialEngine;
     private ReplayRecorder? _recorder;
     private ReplayPlayer? _replayPlayer;
@@ -19,20 +21,22 @@ public sealed class GameController
     private bool _replaying;
     private int _recordingSeed;
 
-    public GameController(GameEngine engine, HighScoreStore highScoreStore)
+    public GameController(GameEngine engine, HighScoreStore highScoreStore, IScoreHistoryStore? scoreHistoryStore = null)
     {
         Engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _providedInitialEngine = engine;
         _engineFactory = seed => new GameEngine(new RandomPieceSource(seed));
         _highScoreStore = highScoreStore ?? throw new ArgumentNullException(nameof(highScoreStore));
+        _scoreHistoryStore = scoreHistoryStore;
         HighScore = Math.Max(0, highScoreStore.Load());
     }
 
-    public GameController(HighScoreStore highScoreStore, Func<int, GameEngine> engineFactory, ReplayStore replayStore)
+    public GameController(HighScoreStore highScoreStore, Func<int, GameEngine> engineFactory, ReplayStore replayStore, IScoreHistoryStore? scoreHistoryStore = null)
     {
         _highScoreStore = highScoreStore ?? throw new ArgumentNullException(nameof(highScoreStore));
         _engineFactory = engineFactory ?? throw new ArgumentNullException(nameof(engineFactory));
         _replayStore = replayStore ?? throw new ArgumentNullException(nameof(replayStore));
+        _scoreHistoryStore = scoreHistoryStore;
         _recordingSeed = Random.Shared.Next();
         Engine = _engineFactory(_recordingSeed);
         HighScore = Math.Max(0, highScoreStore.Load());
@@ -41,6 +45,7 @@ public sealed class GameController
     public int HighScore { get; private set; }
     public bool HighScoreSaveFailed { get; private set; }
     public bool AiEnabled { get; private set; }
+    public int AiDemoSpeedMultiplier { get; private set; } = 1;
     public bool IsQuitRequested { get; private set; }
     public GameScreen Screen { get; private set; } = GameScreen.MainMenu;
     public GameMode Mode { get; private set; } = GameMode.SinglePlayer;
@@ -51,9 +56,19 @@ public sealed class GameController
     public bool ReplayPaused => _replayPlayer?.IsPaused ?? false;
     public double ReplaySpeed => _replayPlayer?.Speed ?? 1;
     public string? ReplayMessage { get; private set; }
+    public IReadOnlyList<ScoreEntry> Leaderboard { get; private set; } = [];
+    public string? ScoreHistoryError { get; private set; }
 
     public void Handle(GameCommand command)
     {
+        if (command == GameCommand.Quit)
+        {
+            IsQuitRequested = true;
+            return;
+        }
+
+        if (Mode == GameMode.AiDemo && Screen != GameScreen.MainMenu && !IsAllowedDuringAiDemo(command)) return;
+
         if (command == GameCommand.SaveReplay) { SaveReplay(); return; }
         if (command == GameCommand.PlayReplay) { StartLatestReplay(); return; }
         if (command == GameCommand.ToggleReplayPause)
@@ -74,12 +89,6 @@ public sealed class GameController
             }
             return;
         }
-        if (command == GameCommand.Quit)
-        {
-            IsQuitRequested = true;
-            return;
-        }
-
         if (Screen == GameScreen.MainMenu)
         {
             switch (command)
@@ -87,7 +96,14 @@ public sealed class GameController
                 case GameCommand.StartSinglePlayer: StartMode(GameMode.SinglePlayer); SaveHighScoreIfNeeded(); break;
                 case GameCommand.StartTwoPlayer: StartMode(GameMode.TwoPlayer); SaveHighScoreIfNeeded(); break;
                 case GameCommand.StartAiDemo: StartMode(GameMode.AiDemo); SaveHighScoreIfNeeded(); break;
+                case GameCommand.ShowLeaderboard: LoadLeaderboard(); Screen = GameScreen.Leaderboard; break;
             }
+            return;
+        }
+
+        if (Screen == GameScreen.Leaderboard)
+        {
+            if (command == GameCommand.MainMenu) Screen = GameScreen.MainMenu;
             return;
         }
 
@@ -119,6 +135,12 @@ public sealed class GameController
         }
 
         if (Screen == GameScreen.Paused) return;
+
+        if (Mode == GameMode.AiDemo && command == GameCommand.ToggleAiDemoSpeed)
+        {
+            AiDemoSpeedMultiplier = AiDemoSpeedMultiplier == 1 ? 2 : 1;
+            return;
+        }
 
         if (command == GameCommand.ToggleAi)
         {
@@ -226,6 +248,12 @@ public sealed class GameController
 
     private bool ControlsPlayerTwoWithAi => AiEnabled && Mode == GameMode.TwoPlayer;
 
+    private static bool IsAllowedDuringAiDemo(GameCommand command) => command is
+        GameCommand.None or GameCommand.TogglePause or GameCommand.ToggleAiDemoSpeed or
+        GameCommand.Restart or GameCommand.MainMenu or GameCommand.SaveReplay or
+        GameCommand.PlayReplay or GameCommand.ToggleReplayPause or
+        GameCommand.ReplayFaster or GameCommand.ReplaySlower;
+
     private void StartMode(GameMode mode, int? seed = null, bool startRecording = true)
     {
         _recordingSeed = seed ?? Random.Shared.Next();
@@ -239,9 +267,11 @@ public sealed class GameController
         Mode = mode;
         SecondEngine = mode == GameMode.TwoPlayer ? _engineFactory(unchecked(_recordingSeed ^ 0x5f3759df)) : null;
         AiEnabled = mode == GameMode.AiDemo;
+        AiDemoSpeedMultiplier = 1;
         GameOverMessage = null;
         Screen = GameScreen.Playing;
         if (startRecording && !_replaying) _recorder = new ReplayRecorder(_recordingSeed, mode);
+        _scoreResultsSaved = false;
     }
 
     private void Restart()
@@ -249,8 +279,10 @@ public sealed class GameController
         Engine.Restart();
         SecondEngine = Mode == GameMode.TwoPlayer ? _engineFactory(unchecked(_recordingSeed ^ 0x5f3759df)) : null;
         AiEnabled = Mode == GameMode.AiDemo;
+        AiDemoSpeedMultiplier = 1;
         GameOverMessage = null;
         Screen = GameScreen.Playing;
+        _scoreResultsSaved = false;
     }
 
     private void TogglePause()
@@ -352,7 +384,40 @@ public sealed class GameController
         else return;
 
         Screen = GameScreen.GameOver;
+        SaveScoreResults();
         SaveHighScoreIfNeeded();
+    }
+
+    private void LoadLeaderboard()
+    {
+        if (_scoreHistoryStore is null)
+        {
+            Leaderboard = [];
+            ScoreHistoryError = "排行榜数据库尚未配置。";
+            return;
+        }
+        Leaderboard = _scoreHistoryStore.GetTopScores(10, out var error);
+        ScoreHistoryError = error;
+    }
+
+    private void SaveScoreResults()
+    {
+        if (_scoreResultsSaved || _scoreHistoryStore is null || _replaying) return;
+        _scoreResultsSaved = true;
+        var modeName = Mode switch
+        {
+            GameMode.TwoPlayer => "双人对战",
+            GameMode.AiDemo => "AI 观战",
+            _ => "单人游戏"
+        };
+        NewScoreEntry[] results = Mode == GameMode.TwoPlayer && SecondEngine is not null
+            ?
+            [
+                new("玩家一", Engine.State.Score, Engine.State.TotalLines, modeName),
+                new("玩家二", SecondEngine.State.Score, SecondEngine.State.TotalLines, modeName)
+            ]
+            : [new NewScoreEntry(Mode == GameMode.AiDemo ? "AI" : "玩家一", Engine.State.Score, Engine.State.TotalLines, modeName)];
+        if (!_scoreHistoryStore.TryAddResults(results, out var error)) ScoreHistoryError = error;
     }
 
     private void SaveHighScoreIfNeeded()

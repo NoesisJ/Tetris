@@ -22,8 +22,12 @@ public sealed class GameViewFormatter
         {
             var menu = MenuLines();
             if (controller.ReplayMessage is not null) menu.Add(controller.ReplayMessage);
+            if (controller.ScoreHistoryError is not null) menu.Add(controller.ScoreHistoryError);
             return FitLines(menu, terminalWidth);
         }
+
+        if (controller.Screen == GameScreen.Leaderboard)
+            return FitLines(LeaderboardLines(controller), terminalWidth);
 
         var lines = controller.Mode == GameMode.TwoPlayer && controller.SecondEngine is not null
             ? TwoPlayerLines(controller)
@@ -43,6 +47,7 @@ public sealed class GameViewFormatter
 
         if (controller.HighScoreSaveFailed) lines.Add("提示：高分存档不可写，本局仍可继续。");
         if (controller.ReplayMessage is not null) lines.Add(controller.ReplayMessage);
+        if (controller.ScoreHistoryError is not null) lines.Add(controller.ScoreHistoryError);
         return FitLines(lines, terminalWidth);
     }
 
@@ -69,12 +74,29 @@ public sealed class GameViewFormatter
         "1  单人游戏",
         "2  双人本地对战（棋盘并排，消除多行向对手发送垃圾行）",
         "3  AI 观战演示",
+        "4  排行榜",
         "",
         "玩家一：A/D 左右移动，W 旋转，S 加速下落，空格硬降。",
         "玩家二：←/→ 左右移动，↑ 旋转，↓ 加速下落，Enter 硬降。",
-        "游戏中按 P 暂停/继续，M 切换 AI，R 重开，Esc 返回菜单，Q 退出。",
-        "F5 保存当前回放，F6 播放最近回放；播放时 F8 暂停，+/- 调速。"
+        "游戏中按 P 暂停/继续，M 切换双人模式中的 AI，R 重开，Esc 返回菜单，Q 退出。",
+        "AI 观战时按 F9 切换普通/2 倍速；F5 保存回放，F6 播放，F8 暂停，+/- 调速。"
     ];
+
+    private static List<string> LeaderboardLines(GameController controller)
+    {
+        var lines = new List<string> { "俄罗斯方块 - 历史排行榜", "", "排名  玩家      分数    消行  模式          时间（本地）" };
+        if (controller.Leaderboard.Count == 0 && controller.ScoreHistoryError is null)
+            lines.Add("暂无已完成对局记录。");
+        for (var i = 0; i < controller.Leaderboard.Count; i++)
+        {
+            var entry = controller.Leaderboard[i];
+            lines.Add($"{i + 1,2}    {entry.PlayerName,-8}  {entry.Score,6}  {entry.TotalLines,4}  {entry.GameMode,-10}  {entry.PlayedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm}");
+        }
+        if (controller.ScoreHistoryError is not null) lines.Add(controller.ScoreHistoryError);
+        lines.Add("");
+        lines.Add("按 Esc 返回主菜单。");
+        return lines;
+    }
 
     private static List<string> SinglePlayerLines(GameController controller)
     {
@@ -84,8 +106,16 @@ public sealed class GameViewFormatter
         AppendBoardRows(lines, engine.State.Board, engine.State.CurrentPiece, "│", "│", engine.State.NextPiece);
         lines.Add(BoardFooter(engine.State.Board.Width));
         lines.Add(ScoreLine("玩家一", engine.State, controller.HighScore));
-        lines.Add($"状态：{StatusText(engine.State.Status)}   AI：{(controller.AiEnabled ? "开启" : "关闭")}   操作：A/D 移动，W 旋转，S 加速，空格硬降");
-        lines.Add("P 暂停/继续  M 切换 AI  R 重开  Esc 返回菜单  Q 退出");
+        if (controller.Mode == GameMode.AiDemo)
+        {
+            lines.Add($"状态：{StatusText(engine.State.Status)}   AI：自动演示   观战速度：{(controller.AiDemoSpeedMultiplier == 1 ? "普通" : "2 倍速")}");
+            lines.Add("AI 自动操作中；F9 切换普通/2 倍速，P 暂停/继续，R 重开，Esc 返回菜单，Q 退出。");
+        }
+        else
+        {
+            lines.Add($"状态：{StatusText(engine.State.Status)}   AI：{(controller.AiEnabled ? "开启" : "关闭")}   操作：A/D 移动，W 旋转，S 加速，空格硬降");
+            lines.Add("P 暂停/继续  M 切换 AI  R 重开  Esc 返回菜单  Q 退出");
+        }
         if (controller.ReplayMessage is not null) lines.Add(controller.ReplayMessage);
         return lines;
     }

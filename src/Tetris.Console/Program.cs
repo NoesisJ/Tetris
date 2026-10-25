@@ -12,7 +12,8 @@ if (System.Console.IsInputRedirected)
 var saveDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Tetris");
 var store = new HighScoreStore(Path.Combine(saveDirectory, "highscore.xml"));
 var replayStore = new ReplayStore(Path.Combine(saveDirectory, "replays"));
-var controller = new GameController(store, seed => new GameEngine(new RandomPieceSource(seed)), replayStore);
+var scoreHistoryStore = new SqliteScoreHistoryStore(Path.Combine(saveDirectory, "scores.db"));
+var controller = new GameController(store, seed => new GameEngine(new RandomPieceSource(seed)), replayStore, scoreHistoryStore);
 var input = new ConsoleInputSource();
 var renderer = new ConsoleGameRenderer();
 var clock = Stopwatch.StartNew();
@@ -41,10 +42,13 @@ try
 
         if (!controller.IsReplaying && controller.Screen == GameScreen.Playing)
         {
-            dropAccumulator += elapsed;
+            var gameElapsed = controller.Mode == GameMode.AiDemo
+                ? TimeSpan.FromTicks(elapsed.Ticks * controller.AiDemoSpeedMultiplier)
+                : elapsed;
+            dropAccumulator += gameElapsed;
             if (controller.AiEnabled)
             {
-                aiAccumulator += elapsed;
+                aiAccumulator += gameElapsed;
                 if (aiAccumulator.TotalMilliseconds >= 250)
                 {
                     controller.PerformAiTurn();

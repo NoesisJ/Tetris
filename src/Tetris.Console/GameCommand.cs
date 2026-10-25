@@ -18,6 +18,7 @@ public enum GameCommand
     PlayerTwoHardDrop,
     TogglePause,
     ToggleAi,
+    ToggleAiDemoSpeed,
     Restart,
     MainMenu,
     Quit,
@@ -25,7 +26,8 @@ public enum GameCommand
     PlayReplay,
     ToggleReplayPause,
     ReplayFaster,
-    ReplaySlower
+    ReplaySlower,
+    ShowLeaderboard
 }
 
 public enum GameScreen
@@ -33,7 +35,8 @@ public enum GameScreen
     MainMenu,
     Playing,
     Paused,
-    GameOver
+    GameOver,
+    Leaderboard
 }
 
 public enum GameMode

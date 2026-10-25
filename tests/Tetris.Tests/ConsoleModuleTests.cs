@@ -11,6 +11,7 @@ public sealed class ConsoleModuleTests
     [InlineData(ConsoleKey.D1, GameCommand.StartSinglePlayer)]
     [InlineData(ConsoleKey.D2, GameCommand.StartTwoPlayer)]
     [InlineData(ConsoleKey.D3, GameCommand.StartAiDemo)]
+    [InlineData(ConsoleKey.D4, GameCommand.ShowLeaderboard)]
     [InlineData(ConsoleKey.A, GameCommand.PlayerOneLeft)]
     [InlineData(ConsoleKey.D, GameCommand.PlayerOneRight)]
     [InlineData(ConsoleKey.W, GameCommand.PlayerOneRotate)]
@@ -29,6 +30,7 @@ public sealed class ConsoleModuleTests
     [InlineData(ConsoleKey.F5, GameCommand.SaveReplay)]
     [InlineData(ConsoleKey.F6, GameCommand.PlayReplay)]
     [InlineData(ConsoleKey.F8, GameCommand.ToggleReplayPause)]
+    [InlineData(ConsoleKey.F9, GameCommand.ToggleAiDemoSpeed)]
     [InlineData(ConsoleKey.F1, GameCommand.None)]
     public void InputMapper_MapsKeysToCommands(ConsoleKey key, GameCommand expected) =>
         Assert.Equal(expected, GameInputMapper.Map(key));
@@ -71,6 +73,38 @@ public sealed class ConsoleModuleTests
         Assert.Equal(GameStatus.Running, engine.State.Status);
         Assert.Equal(0, Enumerable.Range(0, engine.State.Board.Width).Count(x => engine.State.Board.GetCell(x, 15).HasValue));
         Assert.InRange(engine.State.CurrentPiece.Y, 0, 1);
+    }
+
+    [Fact]
+    public void AiDemo_RejectsHumanControlsAndKeepsAiEnabled()
+    {
+        var controller = new GameController(new GameEngine(new TestPieceSource()),
+            new HighScoreStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "score.xml")));
+        controller.Handle(GameCommand.StartAiDemo);
+        var x = controller.Engine.State.CurrentPiece.X;
+
+        controller.Handle(GameCommand.PlayerOneLeft);
+        controller.Handle(GameCommand.PlayerTwoRight);
+        controller.Handle(GameCommand.PlayerOneHardDrop);
+        controller.Handle(GameCommand.ToggleAi);
+
+        Assert.Equal(x, controller.Engine.State.CurrentPiece.X);
+        Assert.Equal(GameStatus.Running, controller.Engine.State.Status);
+        Assert.True(controller.AiEnabled);
+    }
+
+    [Fact]
+    public void AiDemo_TogglesBetweenNormalAndFastObservationSpeed()
+    {
+        var controller = new GameController(new GameEngine(new TestPieceSource()),
+            new HighScoreStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "score.xml")));
+        controller.Handle(GameCommand.StartAiDemo);
+
+        Assert.Equal(1, controller.AiDemoSpeedMultiplier);
+        controller.Handle(GameCommand.ToggleAiDemoSpeed);
+        Assert.Equal(2, controller.AiDemoSpeedMultiplier);
+        controller.Handle(GameCommand.ToggleAiDemoSpeed);
+        Assert.Equal(1, controller.AiDemoSpeedMultiplier);
     }
 
     [Fact]
@@ -247,6 +281,7 @@ public sealed class ConsoleModuleTests
             new HighScoreStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "score.xml")));
         var formatter = new GameViewFormatter();
         Assert.Contains("2  双人本地对战", formatter.Format(controller, 120, 30));
+        Assert.Contains("4  排行榜", formatter.Format(controller, 120, 30));
 
         controller.Handle(GameCommand.StartTwoPlayer);
         var frame = formatter.Format(controller, 120, 30);
@@ -287,6 +322,31 @@ public sealed class ConsoleModuleTests
 
         Assert.True(terminal.WasCleared);
         Assert.Contains("选择游戏模式", terminal.Text);
+    }
+
+    [Fact]
+    public void Controller_SavesCompletedResultAndShowsLeaderboard()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"tetris-controller-scores-{Guid.NewGuid():N}");
+        try
+        {
+            var history = new SqliteScoreHistoryStore(Path.Combine(directory, "scores.db"));
+            var engine = new GameEngine(new TestPieceSource(),
+                new GameState(new Board(), new Piece(TetrominoType.T, 4, 0), new Piece(TetrominoType.I, 4, 0), score: 700, totalLines: 7, status: GameStatus.GameOver));
+            var controller = new GameController(engine, new HighScoreStore(Path.Combine(directory, "highscore.xml")), history);
+            controller.Handle(GameCommand.StartSinglePlayer);
+            controller.AdvanceTime();
+
+            Assert.Equal(GameScreen.GameOver, controller.Screen);
+            controller.Handle(GameCommand.MainMenu);
+            controller.Handle(GameCommand.ShowLeaderboard);
+
+            Assert.Equal(GameScreen.Leaderboard, controller.Screen);
+            var entry = Assert.Single(controller.Leaderboard);
+            Assert.Equal(700, entry.Score);
+            Assert.Equal("单人游戏", entry.GameMode);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
     [Fact]
