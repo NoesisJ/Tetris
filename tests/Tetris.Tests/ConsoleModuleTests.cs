@@ -108,6 +108,24 @@ public sealed class ConsoleModuleTests
     }
 
     [Fact]
+    public void Formatter_ExplainsAiDemoControlsAndCurrentSpeed()
+    {
+        var controller = new GameController(new GameEngine(new TestPieceSource()),
+            new HighScoreStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "score.xml")));
+        controller.Handle(GameCommand.StartAiDemo);
+
+        var normal = new GameViewFormatter().Format(controller, 100, 30);
+        Assert.Contains("AI 自动操作中", normal);
+        Assert.Contains("普通", normal);
+        Assert.DoesNotContain("M 切换 AI", normal);
+
+        controller.Handle(GameCommand.ToggleAiDemoSpeed);
+        var fast = new GameViewFormatter().Format(controller, 100, 30);
+        Assert.Contains("2 倍速", fast);
+        Assert.Contains("F9", fast);
+    }
+
+    [Fact]
     public void TwoPlayer_EnginesAndBoardsAreIndependentAcrossInputsAndGarbage()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"tetris-isolation-{Guid.NewGuid():N}");
