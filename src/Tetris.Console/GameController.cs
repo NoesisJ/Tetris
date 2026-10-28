@@ -58,6 +58,10 @@ public sealed class GameController
     public string? ReplayMessage { get; private set; }
     public IReadOnlyList<ScoreEntry> Leaderboard { get; private set; } = [];
     public string? ScoreHistoryError { get; private set; }
+    public const int ReplayPageSize = 8;
+    public IReadOnlyList<ReplayEntry> Replays { get; private set; } = [];
+    public int SelectedReplayIndex { get; private set; }
+    public string? ReplayLibraryError { get; private set; }
 
     public void Handle(GameCommand command)
     {
@@ -67,10 +71,15 @@ public sealed class GameController
             return;
         }
 
+        if (command == GameCommand.PlayReplay) { OpenReplayLibrary(); return; }
+        if (Screen == GameScreen.ReplayLibrary) { HandleReplayLibrary(command); return; }
+
+        if (_replaying && !_applyingReplay && command is not (GameCommand.MainMenu or
+            GameCommand.ToggleReplayPause or GameCommand.ReplayFaster or GameCommand.ReplaySlower)) return;
+
         if (Mode == GameMode.AiDemo && Screen != GameScreen.MainMenu && !IsAllowedDuringAiDemo(command)) return;
 
         if (command == GameCommand.SaveReplay) { SaveReplay(); return; }
-        if (command == GameCommand.PlayReplay) { StartLatestReplay(); return; }
         if (command == GameCommand.ToggleReplayPause)
         {
             if (_replayPlayer is not null)
@@ -164,7 +173,7 @@ public sealed class GameController
 
     public void AdvanceTime()
     {
-        if (Screen != GameScreen.Playing) return;
+        if (Screen != GameScreen.Playing || (_replaying && !_applyingReplay)) return;
         Record(ReplayEventKind.Tick);
         AdvanceEngine(Engine);
         if (Mode == GameMode.TwoPlayer && SecondEngine is not null) AdvanceEngine(SecondEngine);
@@ -174,9 +183,11 @@ public sealed class GameController
 
     public void AdvanceReplay(TimeSpan elapsed)
     {
-        if (_recorder is not null && !_replaying) _recorder.Advance(elapsed);
-        if (_replayPlayer is null) return;
-        foreach (var replayEvent in _replayPlayer.Advance(elapsed))
+        if (_recorder is not null && !_replaying && Screen is (GameScreen.Playing or GameScreen.Paused))
+            _recorder.Advance(elapsed);
+        var player = _replayPlayer;
+        if (player is null) return;
+        foreach (var replayEvent in player.Advance(elapsed))
         {
             _applyingReplay = true;
             try
@@ -189,18 +200,20 @@ public sealed class GameController
                 }
             }
             finally { _applyingReplay = false; }
+            if (!ReferenceEquals(_replayPlayer, player)) return;
         }
-        if (_replayPlayer.IsComplete)
+        if (player.IsComplete)
         {
-            ReplayMessage = "回放已结束。按 F6 可重新加载最近回放。";
+            ReplayMessage = "回放已结束。F6 选择其他录像，Esc 返回主菜单。";
             _replayPlayer = null;
-            _replaying = false;
+            // Keep the final recorded frame; live gravity/input must not continue this replay.
         }
     }
 
     public void SaveReplay()
     {
-        if (_replayStore is null || _recorder is null) { ReplayMessage = "回放保存不可用。"; return; }
+        if (_replaying || Screen == GameScreen.ReplayLibrary || _replayStore is null || _recorder is null)
+        { ReplayMessage = "回放保存不可用。"; return; }
         ReplayMessage = _replayStore.TrySave(_recorder.Snapshot(), out var path)
             ? $"回放已保存：{Path.GetFileName(path)}"
             : "回放保存失败，请检查本地目录权限。";
@@ -210,6 +223,49 @@ public sealed class GameController
     {
         var document = _replayStore?.LoadLatest();
         if (document is null) { ReplayMessage = "没有可读取的回放文件。"; return false; }
+        return StartReplay(document);
+    }
+
+    public void OpenReplayLibrary()
+    {
+        _replayPlayer = null;
+        _replaying = false;
+        _recorder = null;
+        ReplayMessage = null;
+        SelectedReplayIndex = 0;
+        string? error = null;
+        Replays = _replayStore?.ListReplays(out error) ?? [];
+        ReplayLibraryError = _replayStore is null ? "录像存储尚未配置。" : error;
+        Screen = GameScreen.ReplayLibrary;
+    }
+
+    private void HandleReplayLibrary(GameCommand command)
+    {
+        if (command == GameCommand.MainMenu) { Screen = GameScreen.MainMenu; return; }
+        if (Replays.Count == 0) return;
+        var offset = command switch
+        {
+            GameCommand.PlayerOneRotate or GameCommand.PlayerTwoRotate => -1,
+            GameCommand.PlayerOneSoftDrop or GameCommand.PlayerTwoSoftDrop => 1,
+            GameCommand.ReplayPageUp => -ReplayPageSize,
+            GameCommand.ReplayPageDown => ReplayPageSize,
+            _ => 0
+        };
+        SelectedReplayIndex = Math.Clamp(SelectedReplayIndex + offset, 0, Replays.Count - 1);
+        if (command is not (GameCommand.PlayerOneHardDrop or GameCommand.PlayerTwoHardDrop)) return;
+        // Re-read at selection time: a listed file may have been deleted, locked or changed.
+        var document = _replayStore?.Load(Replays[SelectedReplayIndex].Path);
+        if (document is null)
+        {
+            ReplayLibraryError = "该录像已被删除、损坏或无法读取。请选择其他录像，或按 F6 刷新。";
+            return;
+        }
+        StartReplay(document);
+    }
+
+    private bool StartReplay(ReplayDocument document)
+    {
+        _providedInitialEngine = null;
         _replaying = true;
         _recorder = null;
         _replayPlayer = new ReplayPlayer(document);
@@ -225,7 +281,7 @@ public sealed class GameController
 
     public bool PerformAiTurn()
     {
-        if (!AiEnabled || Screen != GameScreen.Playing) return false;
+        if (!AiEnabled || Screen != GameScreen.Playing || (_replaying && !_applyingReplay)) return false;
         var target = Mode == GameMode.TwoPlayer ? SecondEngine : Engine;
         if (target is null || target.State.Status != GameStatus.Running) return false;
 
@@ -256,6 +312,7 @@ public sealed class GameController
 
     private void StartMode(GameMode mode, int? seed = null, bool startRecording = true)
     {
+        ReplayMessage = null;
         _recordingSeed = seed ?? Random.Shared.Next();
         _garbageRandom = new Random(unchecked(_recordingSeed ^ 0x16a09e66));
         if (_providedInitialEngine is not null)

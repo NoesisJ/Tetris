@@ -27,7 +27,9 @@ public enum GameCommand
     ToggleReplayPause,
     ReplayFaster,
     ReplaySlower,
-    ShowLeaderboard
+    ShowLeaderboard,
+    ReplayPageUp,
+    ReplayPageDown
 }
 
 public enum GameScreen
@@ -36,7 +38,8 @@ public enum GameScreen
     Playing,
     Paused,
     GameOver,
-    Leaderboard
+    Leaderboard,
+    ReplayLibrary
 }
 
 public enum GameMode

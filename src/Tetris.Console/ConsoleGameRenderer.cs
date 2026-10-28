@@ -37,9 +37,7 @@ public sealed class ConsoleGameRenderer : IGameRenderer
             var screenChanged = _previousScreen != controller.Screen || _previousMode != controller.Mode;
             _previousScreen = controller.Screen;
             _previousMode = controller.Mode;
-            var minimumWidth = controller.Screen != GameScreen.MainMenu && controller.Mode == GameMode.TwoPlayer
-                ? GameViewFormatter.MinimumTwoPlayerWidth
-                : GameViewFormatter.MinimumWidth;
+            var minimumWidth = GameViewFormatter.RequiredWidth(controller);
             if (width < minimumWidth || height < GameViewFormatter.MinimumHeight)
             {
                 _terminal.Clear();

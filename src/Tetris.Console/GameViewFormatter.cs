@@ -12,9 +12,7 @@ public sealed class GameViewFormatter
     public string Format(GameController controller, int terminalWidth, int terminalHeight)
     {
         ArgumentNullException.ThrowIfNull(controller);
-        var requiredWidth = controller.Screen != GameScreen.MainMenu && controller.Mode == GameMode.TwoPlayer
-            ? MinimumTwoPlayerWidth
-            : MinimumWidth;
+        var requiredWidth = RequiredWidth(controller);
         if (terminalWidth < requiredWidth || terminalHeight < MinimumHeight)
             return $"请将终端窗口调整到至少 {requiredWidth} 列 × {MinimumHeight} 行。";
 
@@ -29,16 +27,19 @@ public sealed class GameViewFormatter
         if (controller.Screen == GameScreen.Leaderboard)
             return FitLines(LeaderboardLines(controller), terminalWidth);
 
+        if (controller.Screen == GameScreen.ReplayLibrary)
+            return FitLines(ReplayLibraryLines(controller), terminalWidth);
+
         var lines = controller.Mode == GameMode.TwoPlayer && controller.SecondEngine is not null
             ? TwoPlayerLines(controller)
             : SinglePlayerLines(controller);
 
-        if (controller.Screen == GameScreen.Paused)
+        if (!controller.IsReplaying && controller.Screen == GameScreen.Paused)
         {
             lines.Add(string.Empty);
             lines.Add("游戏已暂停。按 P 继续，按 Esc 返回主菜单。");
         }
-        else if (controller.Screen == GameScreen.GameOver)
+        else if (!controller.IsReplaying && controller.Screen == GameScreen.GameOver)
         {
             lines.Add(string.Empty);
             lines.Add(controller.GameOverMessage ?? "游戏结束。");
@@ -75,12 +76,48 @@ public sealed class GameViewFormatter
         "2  双人本地对战（棋盘并排，消除多行向对手发送垃圾行）",
         "3  AI 观战演示",
         "4  排行榜",
+        "5  录像列表（F6）",
         "",
         "玩家一：A/D 左右移动，W 旋转，S 加速下落，空格硬降。",
         "玩家二：←/→ 左右移动，↑ 旋转，↓ 加速下落，Enter 硬降。",
         "游戏中按 P 暂停/继续，M 切换双人模式中的 AI，R 重开，Esc 返回菜单，Q 退出。",
-        "AI 观战时按 F9 切换普通/2 倍速；F5 保存回放，F6 播放，F8 暂停，+/- 调速。"
+        "AI 观战时按 F9 切换普通/2 倍速；F5 保存，F6 选择录像，F8 暂停，+/- 调速。"
     ];
+
+    public static int RequiredWidth(GameController controller) =>
+        controller.Mode == GameMode.TwoPlayer && controller.Screen is
+            GameScreen.Playing or GameScreen.Paused or GameScreen.GameOver
+            ? MinimumTwoPlayerWidth : MinimumWidth;
+
+    private static List<string> ReplayLibraryLines(GameController controller)
+    {
+        var count = controller.Replays.Count;
+        var pageStart = controller.SelectedReplayIndex / GameController.ReplayPageSize * GameController.ReplayPageSize;
+        var lines = new List<string>
+        {
+            "俄罗斯方块 - 录像列表（按保存时间从新到旧）",
+            "↑/↓ 或 W/S 选择，Enter/空格播放，PgUp/PgDn 翻页，F6 刷新，Esc 菜单。",
+            "",
+            "    序号  保存时间（本地）       模式          录制时长"
+        };
+        for (var i = pageStart; i < pageStart + GameController.ReplayPageSize; i++)
+        {
+            if (i >= count) { lines.Add(""); continue; }
+            var entry = controller.Replays[i];
+            var mode = entry.Mode switch
+            {
+                GameMode.TwoPlayer => "双人对战",
+                GameMode.AiDemo => "AI 观战",
+                _ => "单人游戏"
+            };
+            lines.Add($"{(i == controller.SelectedReplayIndex ? ">" : " ")}   {i + 1,4}  {entry.SavedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}  {mode}  {entry.DurationMilliseconds / 1000:0.#} 秒");
+        }
+        lines.Add(count == 0 ? "暂无可播放录像，请先开始游戏并按 F5 保存。" :
+            $"第 {pageStart / GameController.ReplayPageSize + 1}/{(count + GameController.ReplayPageSize - 1) / GameController.ReplayPageSize} 页，共 {count} 份录像。");
+        lines.Add(count == 0 ? "" : $"选中文件：{Path.GetFileName(controller.Replays[controller.SelectedReplayIndex].Path)}");
+        lines.Add(controller.ReplayLibraryError ?? "");
+        return lines;
+    }
 
     private static List<string> LeaderboardLines(GameController controller)
     {
@@ -106,7 +143,12 @@ public sealed class GameViewFormatter
         AppendBoardRows(lines, engine.State.Board, engine.State.CurrentPiece, "│", "│", engine.State.NextPiece);
         lines.Add(BoardFooter(engine.State.Board.Width));
         lines.Add(ScoreLine("玩家一", engine.State, controller.HighScore));
-        if (controller.Mode == GameMode.AiDemo)
+        if (controller.IsReplaying)
+        {
+            lines.Add($"状态：录像回放   速度：{controller.ReplaySpeed:0.##}×");
+            lines.Add("F8 暂停/继续，+/- 调速，F6 选择其他录像，Esc 返回菜单，Q 退出。");
+        }
+        else if (controller.Mode == GameMode.AiDemo)
         {
             lines.Add($"状态：{StatusText(engine.State.Status)}   AI：自动演示   观战速度：{(controller.AiDemoSpeedMultiplier == 1 ? "普通" : "2 倍速")}");
             lines.Add("AI 自动操作中；F9 切换普通/2 倍速，P 暂停/继续，R 重开，Esc 返回菜单，Q 退出。");
@@ -116,7 +158,6 @@ public sealed class GameViewFormatter
             lines.Add($"状态：{StatusText(engine.State.Status)}   AI：{(controller.AiEnabled ? "开启" : "关闭")}   操作：A/D 移动，W 旋转，S 加速，空格硬降");
             lines.Add("P 暂停/继续  M 切换 AI  R 重开  Esc 返回菜单  Q 退出");
         }
-        if (controller.ReplayMessage is not null) lines.Add(controller.ReplayMessage);
         return lines;
     }
 
@@ -140,9 +181,13 @@ public sealed class GameViewFormatter
         }
         lines.Add("└" + new string('─', first.Board.Width * 2) + "┘     └" + new string('─', second.Board.Width * 2) + "┘");
         lines.Add($"玩家一下一个：{PiecePreview(first.NextPiece)}        玩家二下一个：{PiecePreview(second.NextPiece)}        最高分 {controller.HighScore}");
-        lines.Add("玩家一：A/D 移动，W 旋转，S 加速，空格硬降。玩家二：←/→ 移动，↑ 旋转，↓ 加速，Enter 硬降。");
-        lines.Add("一次消除 2 行或以上会向对手增加等量垃圾行。P 暂停/继续，M 切换玩家二 AI，R 重开，Esc 菜单，Q 退出。");
-        if (controller.ReplayMessage is not null) lines.Add(controller.ReplayMessage);
+        if (controller.IsReplaying)
+            lines.Add("F8 暂停/继续回放，+/- 调速，F6 选择其他录像，Esc 菜单，Q 退出。");
+        else
+        {
+            lines.Add("玩家一：A/D 移动，W 旋转，S 加速，空格硬降。玩家二：←/→ 移动，↑ 旋转，↓ 加速，Enter 硬降。");
+            lines.Add("一次消除 2 行或以上会向对手增加等量垃圾行。P 暂停/继续，M 切换玩家二 AI，R 重开，Esc 菜单，Q 退出。");
+        }
         return lines;
     }
 
